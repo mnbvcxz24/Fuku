@@ -2,6 +2,7 @@ package dev.cloneforge.patcher.manifest
 
 import com.reandroid.apk.ApkModule
 import com.reandroid.archive.BlockInputSource
+import com.reandroid.archive.ByteInputSource
 import com.reandroid.archive.InputSource
 import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import com.reandroid.arsc.chunk.xml.ResXmlAttribute
@@ -57,6 +58,8 @@ class ManifestAndArscMutator {
         private const val ATTR_PROCESS = 0x01010011
         private const val ATTR_TASK_AFFINITY = 0x01010012
         private const val ATTR_LABEL = 0x01010001
+        private const val ATTR_ICON = 0x01010002
+        private const val ATTR_ROUND_ICON = 0x0101052c
         private const val ATTR_AUTHORITIES = 0x01010018
         private const val ATTR_EXPORTED = 0x01010010
         private const val ATTR_TARGET_ACTIVITY = 0x01010202
@@ -108,7 +111,8 @@ class ManifestAndArscMutator {
         cloneSuffix: String, // e.g., "cf001"
         customAppLabel: String,
         forceLandscape: Boolean = false,
-        floatingDialogThemeId: Int?
+        floatingDialogThemeId: Int?,
+        launcherIconBytes: ByteArray? = null
     ): MutationResult {
         Log.d(LOG_TAG, "Mutating base APK manifest: $baseApkFile")
         try {
@@ -268,7 +272,11 @@ class ManifestAndArscMutator {
         // Register the clone-owned window runtime before the app's first Activity starts.
         if (floatingDialogThemeId != null) addFloatingBootstrapProvider(appElement, clonePkg)
 
-        // 8. Patch application and original launcher labels.
+        // 8. Patch the clone's launcher icon before signing. The manifest resource IDs
+        // remain intact; their resource-table file values point to the clone-owned PNG.
+        launcherIconBytes?.let { patchLauncherIconResources(apkModule, manifest, appElement, it) }
+
+        // 9. Patch application and original launcher labels.
         patchApplicationAndLauncherLabels(appElement, customAppLabel)
 
         // 9. Mutate account-authenticator, sync-adapter, and searchable XML resources (spec §8).
@@ -505,6 +513,56 @@ class ManifestAndArscMutator {
      * This avoids parsing the multi-megabyte resources.arsc table into memory,
      * which prevents OutOfMemory / SIGABRT crashes on large apps (like Brave).
      */
+    private fun patchLauncherIconResources(
+        apkModule: ApkModule,
+        manifest: AndroidManifestBlock,
+        appElement: ResXmlElement,
+        iconBytes: ByteArray
+    ) {
+        val table = apkModule.getTableBlock()
+            ?: throw IOException("The source APK has no resource table for its launcher icon.")
+
+        val iconIds = linkedSetOf<Int>()
+        manifest.getIconResourceId().takeIf { it != 0 }?.let(iconIds::add)
+        manifest.getRoundIconResourceId().takeIf { it != 0 }?.let(iconIds::add)
+
+        // Some apps put the actual icon on their MAIN/LAUNCHER activity alias.
+        for (component in collectComponents(appElement)) {
+            if (!isLauncherComponent(component)) continue
+            for (attributeId in intArrayOf(ATTR_ICON, ATTR_ROUND_ICON)) {
+                val attribute = component.searchAttributeByResourceId(attributeId) ?: continue
+                if (attribute.getValueType().isReference() && attribute.getData() != 0) {
+                    iconIds.add(attribute.getData())
+                }
+            }
+        }
+
+        if (iconIds.isEmpty()) {
+            throw IOException("The source APK does not expose a replaceable launcher icon resource.")
+        }
+
+        val iconPaths = linkedSetOf<String>()
+        for (resourceId in iconIds) {
+            val resource = table.getResource(resourceId)
+                ?: throw IOException("Could not resolve launcher icon resource 0x${resourceId.toString(16)}.")
+            val resourceType = resource.getType().orEmpty()
+                .takeIf { it == "drawable" || it == "mipmap" } ?: "mipmap"
+            val iconPath = "res/${resourceType}-nodpi/fuku_clone_icon.png"
+            var valueCount = 0
+            for (entry in resource) {
+                entry.setValueAsString(iconPath)
+                valueCount++
+            }
+            if (valueCount == 0) {
+                throw IOException("Launcher icon resource 0x${resourceId.toString(16)} has no values.")
+            }
+            iconPaths.add(iconPath)
+        }
+
+        iconPaths.forEach { path -> apkModule.add(ByteInputSource(iconBytes, path)) }
+        Log.d(LOG_TAG, "Replaced ${iconIds.size} launcher icon resource(s) with the Fuku clone icon.")
+    }
+
     private fun patchApplicationAndLauncherLabels(appElement: ResXmlElement, customLabel: String) {
         val appLabelAttr = appElement.getOrCreateAndroidAttribute("label", ATTR_LABEL)
         appLabelAttr.setValueAsString(customLabel)

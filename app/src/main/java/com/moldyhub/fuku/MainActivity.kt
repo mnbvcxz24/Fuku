@@ -33,6 +33,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,6 +56,7 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.Properties
+import kotlin.math.roundToInt
 
 enum class CloneOutputMode { INSTALL, EXTRACT }
 
@@ -109,6 +112,7 @@ class MainActivity : ComponentActivity() {
                         onCloneApp = ::cloneApp,
                         onLaunchClone = ::launchClone,
                         onImportApk = ::importApk,
+                        onImportIcon = ::importCloneIcon,
                     )
                 }
             }
@@ -133,7 +137,7 @@ class MainActivity : ComponentActivity() {
                 onComplete("APK preparation finished, but the verified workspace could not be found.")
                 return@prepareApks
             }
-            cloneWorkspace(workspace, mode, 1, null) { result -> onComplete(prepared + "\n\n" + result) }
+            cloneWorkspace(workspace, mode, 1, null, null, 0f) { result -> onComplete(prepared + "\n\n" + result) }
         }
     }
 
@@ -251,6 +255,8 @@ class MainActivity : ComponentActivity() {
         mode: CloneOutputMode,
         quantity: Int,
         customAppName: String? = null,
+        customIconPath: String? = null,
+        hueDegrees: Float = 0f,
         onComplete: (String) -> Unit
     ) {
         require(quantity in 1..10) { "Clone quantity must be between 1 and 10." }
@@ -266,7 +272,7 @@ class MainActivity : ComponentActivity() {
             val result = runCatching {
                 val builder = CloneApkBuilder(this)
                 val outcomes = (1..quantity).map {
-                    builder.build(workspace.directory, workspace.packageName, workspace.appLabel, mode, customAppName)
+                    builder.build(workspace.directory, workspace.packageName, workspace.appLabel, mode, customAppName, customIconPath?.let { File(it) }, hueDegrees)
                 }
                 File(workspace.directory).deleteRecursively()
                 if (mode == CloneOutputMode.INSTALL) {
@@ -319,6 +325,18 @@ class MainActivity : ComponentActivity() {
                 "Imported and verified $label ($sourcePackage). Open its Prepared workspace card to clone it."
             }.getOrElse { "APK import failed: ${it.message ?: it.javaClass.simpleName}" }
             runOnUiThread { refreshWorkspaces(); onComplete(result) }
+        }.start()
+    }
+
+    private fun importCloneIcon(uri: Uri, onComplete: (String?) -> Unit) {
+        Thread {
+            val path = runCatching { CloneIconProcessor.importIcon(this, uri).absolutePath }.getOrNull()
+            runOnUiThread {
+                if (path == null) {
+                    Toast.makeText(this, "Could not import that image. Please choose a PNG, JPG, or WebP image.", Toast.LENGTH_LONG).show()
+                }
+                onComplete(path)
+            }
         }.start()
     }
 
@@ -431,10 +449,11 @@ private fun FukuHome(
     onRefresh: () -> Unit,
     onPrepare: (InstalledApp, (String) -> Unit) -> Unit,
     onAnalyze: (PreparedWorkspace, (String) -> Unit) -> Unit,
-    onClone: (PreparedWorkspace, CloneOutputMode, Int, String?, (String) -> Unit) -> Unit,
+    onClone: (PreparedWorkspace, CloneOutputMode, Int, String?, String?, Float, (String) -> Unit) -> Unit,
     onCloneApp: (InstalledApp, CloneOutputMode, (String) -> Unit) -> Unit,
     onLaunchClone: (String) -> Unit,
     onImportApk: (Uri, (String) -> Unit) -> Unit,
+    onImportIcon: (Uri, (String?) -> Unit) -> Unit,
 ) {
     var search by remember { mutableStateOf("") }
     var selectedApp by remember { mutableStateOf<InstalledApp?>(null) }
@@ -448,10 +467,22 @@ private fun FukuHome(
     var outputMode by remember { mutableStateOf(CloneOutputMode.EXTRACT) }
     var cloneQuantity by remember { mutableStateOf(1) }
     var customAppName by remember(selectedWorkspace?.directory) { mutableStateOf("") }
+    var customIconPath by remember(selectedWorkspace?.directory) { mutableStateOf<String?>(null) }
+    var hueDegrees by remember(selectedWorkspace?.directory) { mutableStateOf(0f) }
+    var iconImportMessage by remember { mutableStateOf<String?>(null) }
     var importResult by remember { mutableStateOf<String?>(null) }
     val importApkLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onImportApk(uri) { importResult = it }
     }
+    val importCloneIconLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            onImportIcon(uri) { path ->
+                customIconPath = path
+                iconImportMessage = if (path == null) "Icon import failed." else "Custom icon ready."
+            }
+        }
+    }
+
     val filteredApps = remember(apps, search) {
         apps.filter {
             it.label.contains(search, ignoreCase = true) ||
@@ -690,6 +721,55 @@ private fun FukuHome(
                             TextButton(onClick = { cloneQuantity = (cloneQuantity + 1).coerceAtMost(10) }, enabled = cloneQuantity < 10) { Text("+") }
                         }
                     }
+                    val iconPreviewContext = LocalContext.current
+                    val iconPreview = remember(customIconPath, hueDegrees) {
+                        CloneIconProcessor.previewBitmap(iconPreviewContext, customIconPath, hueDegrees)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Image(
+                            bitmap = iconPreview.asImageBitmap(),
+                            contentDescription = "Clone icon preview",
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Clone icon", fontWeight = FontWeight.Medium)
+                            Text(
+                                if (customIconPath == null) "Default blue Fuku icon" else "Imported custom icon",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            iconImportMessage = "Choose an image from storage..."
+                            importCloneIconLauncher.launch(arrayOf("image/*"))
+                        }) { Text("Import icon") }
+                        if (customIconPath != null) {
+                            TextButton(onClick = {
+                                customIconPath = null
+                                iconImportMessage = "Using the default blue Fuku icon."
+                            }) { Text("Use default") }
+                        }
+                    }
+                    Text("Hue adjustment", fontWeight = FontWeight.Medium)
+                    Slider(
+                        value = hueDegrees,
+                        onValueChange = { hueDegrees = it },
+                        valueRange = 0f..360f
+                    )
+                    Text(
+                        "Hue: ${hueDegrees.roundToInt()}°",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    iconImportMessage?.let {
+                        Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     Text("Optional custom app name", fontWeight = FontWeight.Medium)
                     OutlinedTextField(
                         value = customAppName,
@@ -712,7 +792,7 @@ private fun FukuHome(
                         onClick = {
                             cloningPackage = workspace.packageName
                             cloneResult = "Rewriting package metadata, signing, and saving the output..."
-                            onClone(workspace, outputMode, cloneQuantity, customAppName.trim().takeIf { it.isNotEmpty() }) { result ->
+                            onClone(workspace, outputMode, cloneQuantity, customAppName.trim().takeIf { it.isNotEmpty() }, customIconPath, hueDegrees) { result ->
                                 cloneResult = result
                                 cloningPackage = null
                                 if (result.startsWith("Saved successfully") || result.startsWith("Install request sent")) selectedWorkspace = null

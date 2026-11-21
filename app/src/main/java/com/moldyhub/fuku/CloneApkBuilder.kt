@@ -53,7 +53,7 @@ class CloneApkBuilder(private val context: Context) {
         }
     }
 
-    fun build(workspacePath: String, originalPackage: String, appLabel: String, mode: CloneOutputMode, customAppName: String? = null): CloneBuildOutcome {
+    fun build(workspacePath: String, originalPackage: String, appLabel: String, mode: CloneOutputMode, customAppName: String? = null, customIconFile: File? = null, hueDegrees: Float = 0f): CloneBuildOutcome {
         require(originalPackage.matches(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+"))) {
             "This package name cannot be safely converted to a clone ID."
         }
@@ -145,6 +145,9 @@ class CloneApkBuilder(private val context: Context) {
         }
 
         val mutator = ManifestAndArscMutator()
+        val cloneIconBytes = buildStep("Prepare clone launcher icon") {
+            CloneIconProcessor.createPngBytes(context, customIconFile, hueDegrees)
+        }
         // Restoring an activity theme before its onCreate requires
         // ActivityLifecycleCallbacks.onActivityPreCreated (API 29+).
         // On API 26-28 that hook does not exist, so leave the app's themes
@@ -167,7 +170,8 @@ class CloneApkBuilder(private val context: Context) {
             cloneSuffix = suffix,
             customAppLabel = cloneDisplayName,
             forceLandscape = false,
-            floatingDialogThemeId = dialogThemeId
+            floatingDialogThemeId = dialogThemeId,
+            launcherIconBytes = cloneIconBytes
         ) }
         // Resolve relative Application and AppComponentFactory names back to the original DEX namespace.
         buildStep("Preserve original Application and AppComponentFactory names") { fixApplicationClassNames(stagedApks.first(), mutation.originalApplicationClass, mutation.originalAppComponentFactory) }
