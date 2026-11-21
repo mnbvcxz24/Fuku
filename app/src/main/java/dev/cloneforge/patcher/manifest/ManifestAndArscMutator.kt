@@ -5,7 +5,6 @@ import com.reandroid.archive.BlockInputSource
 import com.reandroid.archive.ByteInputSource
 import com.reandroid.archive.InputSource
 import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
-import com.reandroid.arsc.chunk.xml.ResXmlAttribute
 import com.reandroid.arsc.chunk.xml.ResXmlDocument
 import com.reandroid.arsc.chunk.xml.ResXmlElement
 import com.reandroid.arsc.value.ValueType
