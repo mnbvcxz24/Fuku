@@ -12,17 +12,19 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
 object CloneIconProcessor {
     private const val ICON_SIZE = 512
 
     fun importIcon(context: Context, uri: Uri): File {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, bounds)
-        } ?: error("Could not open the selected image.")
+        val boundsStream = context.contentResolver.openInputStream(uri)
+            ?: error("Could not open the selected image.")
+        boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "The selected file is not a supported image." }
 
         var sampleSize = 1
@@ -91,11 +93,21 @@ object CloneIconProcessor {
     }
 
     private fun applyHue(source: Bitmap, degrees: Float): Bitmap {
-        val matrix = ColorMatrix().apply {
-            setRotate(0, degrees)
-            postConcat(ColorMatrix().apply { setRotate(1, degrees) })
-            postConcat(ColorMatrix().apply { setRotate(2, degrees) })
-        }
+        val radians = Math.toRadians(degrees.toDouble())
+        val cosine = cos(radians).toFloat()
+        val sine = sin(radians).toFloat()
+        val matrix = ColorMatrix(floatArrayOf(
+            0.213f + cosine * 0.787f - sine * 0.213f,
+            0.715f - cosine * 0.715f - sine * 0.715f,
+            0.072f - cosine * 0.072f + sine * 0.928f, 0f, 0f,
+            0.213f - cosine * 0.213f + sine * 0.143f,
+            0.715f + cosine * 0.285f + sine * 0.140f,
+            0.072f - cosine * 0.072f - sine * 0.283f, 0f, 0f,
+            0.213f - cosine * 0.213f - sine * 0.787f,
+            0.715f - cosine * 0.715f + sine * 0.715f,
+            0.072f + cosine * 0.928f + sine * 0.072f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        ))
         val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
             colorFilter = ColorMatrixColorFilter(matrix)
