@@ -13,7 +13,8 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.ImageView;
+import android.graphics.Typeface;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.HashMap;
@@ -70,20 +71,22 @@ final class FloatingBubble {
         final float density = app.getResources().getDisplayMetrics().density;
         final int size = Math.round(52 * density);
 
-        final ImageView bubble = new ImageView(app);
-        bubble.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        final TextView bubble = new TextView(app);
+        String packageName = app.getPackageName();
+        String cloneNumber = packageName.matches(".*\\.fuku\\.c\\d{3}$")
+                ? String.valueOf(Integer.parseInt(packageName.substring(packageName.lastIndexOf(".c") + 2)))
+                : "?";
+        bubble.setText(cloneNumber);
+        bubble.setTextColor(Color.WHITE);
+        bubble.setTextSize(18);
+        bubble.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        bubble.setGravity(Gravity.CENTER);
         GradientDrawable bg = new GradientDrawable();
         bg.setShape(GradientDrawable.OVAL);
         bg.setColor(0xE6202124);
         bg.setStroke(Math.round(2 * density), 0xFF8AB4F8);
         bubble.setBackground(bg);
         bubble.setClipToOutline(true);
-        try {
-            bubble.setImageDrawable(app.getPackageManager().getApplicationIcon(app.getPackageName()));
-        } catch (Throwable iconError) {
-            android.util.Log.w("FukuFloating", "Could not load cloned app icon", iconError);
-            bubble.setImageDrawable(null);
-        }
         bubble.setContentDescription(label != null && label.length() > 0
                 ? label + " minimized app" : "Minimized app");
 
