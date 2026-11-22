@@ -3,6 +3,9 @@ package com.moldyhub.fuku
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -82,6 +85,38 @@ object CloneIconProcessor {
                     density to output.toByteArray()
                 } finally {
                     if (scaled !== source) scaled.recycle()
+                }
+            }
+        } finally {
+            source.recycle()
+        }
+    }
+
+    fun createAdaptiveForegroundBytesByDensity(context: Context, customIconFile: File?, hueDegrees: Float): Map<String, ByteArray> {
+        val source = previewBitmap(context, customIconFile?.absolutePath, hueDegrees)
+        return try {
+            listOf(
+                "mdpi" to 108,
+                "hdpi" to 162,
+                "xhdpi" to 216,
+                "xxhdpi" to 324,
+                "xxxhdpi" to 432,
+                "nodpi" to 432
+            ).associate { (density, size) ->
+                val foreground = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                try {
+                    val canvas = Canvas(foreground)
+                    val inset = size * 0.17f
+                    val destination = RectF(inset, inset, size - inset, size - inset)
+                    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+                    canvas.drawBitmap(source, null, destination, paint)
+                    val output = ByteArrayOutputStream()
+                    check(compressWebp(foreground, output)) {
+                        "Could not encode the $density adaptive clone icon."
+                    }
+                    density to output.toByteArray()
+                } finally {
+                    foreground.recycle()
                 }
             }
         } finally {
