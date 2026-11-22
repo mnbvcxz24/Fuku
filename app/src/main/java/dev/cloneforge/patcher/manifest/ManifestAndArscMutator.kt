@@ -576,7 +576,8 @@ class ManifestAndArscMutator {
                     else -> 192
                 }
                 val folderQualifier = if (assetKey == "nodpi") "nodpi" else assetKey
-                val iconPath = "res/${resourceType}-${folderQualifier}/fuku_clone_icon.webp"
+                val extension = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) "webp" else "png"
+                val iconPath = "res/${resourceType}-${folderQualifier}/fuku_clone_icon.$extension"
                 val bytes = iconBytesByDensity[assetKey]
                     ?: throw IOException("Missing $assetKey launcher icon image.")
                 entry.setValueAsString(iconPath)
