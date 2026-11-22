@@ -37,7 +37,7 @@ object CloneIconProcessor {
         val scaled = Bitmap.createScaledBitmap(square, ICON_SIZE, ICON_SIZE, true)
         if (scaled !== square) square.recycle()
 
-        val output = File(context.cacheDir, "fuku_clone_custom_icon.webp")
+        val output = File(context.cacheDir, "fuku_clone_custom_icon.${iconFileExtension()}")
         FileOutputStream(output).use {
             check(compressWebp(scaled, it)) {
                 "Could not save the selected icon image."
@@ -103,12 +103,14 @@ object CloneIconProcessor {
         }
     }
 
+    private fun iconFileExtension(): String =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) "webp" else "png"
+
     private fun compressWebp(bitmap: Bitmap, output: java.io.OutputStream): Boolean {
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, output)
         } else {
-            @Suppress("DEPRECATION")
-            bitmap.compress(Bitmap.CompressFormat.WEBP, 100, output)
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
         }
     }
 
