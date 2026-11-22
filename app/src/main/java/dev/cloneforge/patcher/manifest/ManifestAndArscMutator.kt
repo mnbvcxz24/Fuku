@@ -559,15 +559,10 @@ class ManifestAndArscMutator {
                     continue
                 }
 
-                val density = config?.getDensity()?.toString()?.lowercase()
-                val assetKey = when (density) {
-                    "mdpi" -> "mdpi"
-                    "hdpi" -> "hdpi"
-                    "xhdpi" -> "xhdpi"
-                    "xxhdpi" -> "xxhdpi"
-                    "xxxhdpi" -> "xxxhdpi"
-                    else -> "nodpi"
-                }
+                val density = qualifier.split("-").firstOrNull { it in setOf(
+                    "mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"
+                ) }
+                val assetKey = density ?: "nodpi"
                 val pixelSize = when (assetKey) {
                     "mdpi" -> 48
                     "hdpi" -> 72
