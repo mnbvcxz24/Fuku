@@ -146,7 +146,7 @@ class CloneApkBuilder(private val context: Context) {
 
         val mutator = ManifestAndArscMutator()
         val cloneIconBytes = buildStep("Prepare clone launcher icon") {
-            CloneIconProcessor.createWebpBytes(context, customIconFile, hueDegrees)
+            CloneIconProcessor.createDensityIconBytes(context, customIconFile, hueDegrees)
         }
         // Restoring an activity theme before its onCreate requires
         // ActivityLifecycleCallbacks.onActivityPreCreated (API 29+).
@@ -171,7 +171,7 @@ class CloneApkBuilder(private val context: Context) {
             customAppLabel = cloneDisplayName,
             forceLandscape = false,
             floatingDialogThemeId = dialogThemeId,
-            launcherIconBytes = cloneIconBytes
+            launcherIconBytesByDensity = cloneIconBytes
         ) }
         // Resolve relative Application and AppComponentFactory names back to the original DEX namespace.
         buildStep("Preserve original Application and AppComponentFactory names") { fixApplicationClassNames(stagedApks.first(), mutation.originalApplicationClass, mutation.originalAppComponentFactory) }
