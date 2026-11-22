@@ -3,17 +3,11 @@ package com.moldyhub.fuku
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Paint
-import android.graphics.Rect
 import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
-import kotlin.math.floor
 import kotlin.math.min
 
 object CloneIconProcessor {
