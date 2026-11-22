@@ -64,6 +64,31 @@ object CloneIconProcessor {
         return adjusted
     }
 
+    fun createDensityIconBytes(context: Context, customIconFile: File?, hueDegrees: Float): Map<String, ByteArray> {
+        val source = previewBitmap(context, customIconFile?.absolutePath, hueDegrees)
+        return try {
+            listOf(
+                "mdpi" to 48,
+                "hdpi" to 72,
+                "xhdpi" to 96,
+                "xxhdpi" to 144,
+                "xxxhdpi" to 192,
+                "nodpi" to 192
+            ).associate { (density, size) ->
+                val scaled = Bitmap.createScaledBitmap(source, size, size, true)
+                try {
+                    val output = ByteArrayOutputStream()
+                    check(compressWebp(scaled, output)) { "Could not encode the $density clone icon." }
+                    density to output.toByteArray()
+                } finally {
+                    if (scaled !== source) scaled.recycle()
+                }
+            }
+        } finally {
+            source.recycle()
+        }
+    }
+
     fun createWebpBytes(context: Context, customIconFile: File?, hueDegrees: Float): ByteArray {
         val bitmap = previewBitmap(context, customIconFile?.absolutePath, hueDegrees)
         return try {
