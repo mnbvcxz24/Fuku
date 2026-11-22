@@ -38,7 +38,13 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     private static final Map<Activity, View> DECORATIONS = new WeakHashMap<>();
     private static final Map<Activity, ViewTreeObserver.OnGlobalLayoutListener> LAYOUT_LISTENERS =
             new WeakHashMap<>();
+    private static final Map<Activity, Integer> INSTALL_RETRIES = new WeakHashMap<>();
+    private static final Set<Activity> LIVE_ACTIVITIES =
+            Collections.newSetFromMap(new WeakHashMap<Activity, Boolean>());
+    private static final int MAX_INSTALL_RETRIES = 20;
     private static boolean callbacksRegistered;
+    private static boolean startupStateRead;
+    private static boolean previousRunDirty;
 
     private static final class DecorationState {
         final View bar;
@@ -107,6 +113,10 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     }
 
     @Override public void onActivityStarted(final Activity activity) {
+        markRunDirty(activity);
+        synchronized (LOCK) {
+            LIVE_ACTIVITIES.add(activity);
+        }
         final View decor = activity.getWindow().getDecorView();
         decor.post(new Runnable() {
             @Override public void run() {
@@ -117,7 +127,11 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
 
     @Override public void onActivityStopped(Activity activity) { saveBounds(activity); }
     @Override public void onActivityPaused(Activity activity) { saveBounds(activity); }
-    @Override public void onActivityCreated(Activity activity, Bundle state) {}
+    @Override public void onActivityCreated(Activity activity, Bundle state) {
+        synchronized (LOCK) {
+            LIVE_ACTIVITIES.add(activity);
+        }
+    }
     @Override public void onActivityResumed(Activity activity) { FloatingBubble.hide(activity.getTaskId()); }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
 
@@ -132,12 +146,21 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             }
             INSTALLED.remove(activity);
             DECORATIONS.remove(activity);
+            INSTALL_RETRIES.remove(activity);
+            LIVE_ACTIVITIES.remove(activity);
+            if (activity.isFinishing() && LIVE_ACTIVITIES.isEmpty()) {
+                markRunClean(activity);
+                startupStateRead = false;
+            }
         }
     }
 
     private void setup(final Activity activity) {
         final View decorView = activity.getWindow().getDecorView();
-        if (!(decorView instanceof ViewGroup)) return;
+        if (!(decorView instanceof ViewGroup)) {
+            android.util.Log.w("FukuFloating", "Cannot install title bar: decor is not a ViewGroup");
+            return;
+        }
         final ViewGroup decor = (ViewGroup) decorView;
 
         synchronized (LOCK) {
@@ -155,7 +178,12 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                     wrapper = DECORATIONS.get(activity);
                 }
                 if (wrapper == null) {
-                    installDecoration(activity, decor);
+                    try {
+                        installDecoration(activity, decor);
+                    } catch (Throwable error) {
+                        android.util.Log.w("FukuFloating", "Title-bar installation attempt failed", error);
+                        recordInstallRetry(activity, decor, "installation exception");
+                    }
                     return;
                 }
 
@@ -191,11 +219,12 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                     state.lastScreenHeight = current.heightPixels;
                     float density = current.density;
                     WindowManager.LayoutParams p = activity.getWindow().getAttributes();
-                    p.width = clamp(p.width, Math.round(260 * density), current.widthPixels);
-                    p.height = clamp(p.height, Math.round(180 * density), current.heightPixels);
+                    p.width = clampDimension(p.width, Math.round(260 * density), current.widthPixels);
+                    p.height = clampDimension(p.height, Math.round(180 * density), current.heightPixels);
                     p.x = clamp(p.x, -p.width + Math.round(72 * density),
                             Math.max(0, current.widthPixels - Math.round(72 * density)));
-                    p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - Math.round(36 * density)));
+                    int barHeight = Math.round(38 * density);
+                    p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - barHeight));
                     activity.getWindow().setAttributes(p);
                 }
             }
@@ -206,47 +235,53 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         }
         ViewTreeObserver observer = decor.getViewTreeObserver();
         if (observer.isAlive()) observer.addOnGlobalLayoutListener(listener);
-        installDecoration(activity, decor);
+        try {
+            installDecoration(activity, decor);
+        } catch (Throwable error) {
+            android.util.Log.w("FukuFloating", "Initial title-bar installation failed", error);
+            recordInstallRetry(activity, decor, "initial installation exception");
+        }
     }
 
     private void installDecoration(final Activity activity, final ViewGroup decor) {
         synchronized (LOCK) {
             if (INSTALLED.contains(activity) || activity.isFinishing() || activity.isDestroyed()) return;
         }
-        if (decor.getChildCount() == 0) return;
+        if (decor.getChildCount() == 0) {
+            android.util.Log.w("FukuFloating", "Cannot install title bar yet: decor has no child");
+            recordInstallRetry(activity, decor, "decor has no child");
+            return;
+        }
 
         final View appRoot = decor.getChildAt(0);
         if (!(appRoot.getParent() instanceof ViewGroup)) {
             android.util.Log.w("FukuFloating", "Cannot wrap decor root: parent is not a ViewGroup");
+            recordInstallRetry(activity, decor, "decor root parent is not a ViewGroup");
             return;
         }
         final ViewGroup rootParent = (ViewGroup) appRoot.getParent();
         if (rootParent != decor) {
             android.util.Log.w("FukuFloating", "Cannot wrap decor root: unexpected parent "
                     + rootParent.getClass().getName());
+            recordInstallRetry(activity, decor, "unexpected decor root parent");
             return;
         }
 
         final DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
         final float density = metrics.density;
-        int[] bounds = loadBounds(activity);
-        if (bounds == null) {
-            int width = Math.round(metrics.widthPixels * 0.82f);
-            int height = Math.round(metrics.heightPixels * 0.78f);
-            bounds = new int[] {
-                    Math.max(0, (metrics.widthPixels - width) / 2),
-                    Math.max(0, (metrics.heightPixels - height) / 2),
-                    width, height
-            };
+        final boolean dirty;
+        synchronized (LOCK) {
+            dirty = previousRunDirty;
         }
+        int[] bounds = loadValidatedBounds(activity, metrics, dirty);
 
         Window window = activity.getWindow();
         WindowManager.LayoutParams windowParams = window.getAttributes();
         windowParams.gravity = Gravity.TOP | Gravity.START;
         windowParams.x = bounds[0];
         windowParams.y = bounds[1];
-        windowParams.width = clamp(bounds[2], Math.round(260 * density), metrics.widthPixels);
-        windowParams.height = clamp(bounds[3], Math.round(180 * density), metrics.heightPixels);
+        windowParams.width = clampDimension(bounds[2], Math.round(260 * density), metrics.widthPixels);
+        windowParams.height = clampDimension(bounds[3], Math.round(180 * density), metrics.heightPixels);
         windowParams.dimAmount = 0f;
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
@@ -277,6 +312,60 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         title.setGravity(Gravity.CENTER);
         title.setSingleLine(true);
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View view) {
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
+                int[] defaults = defaultBounds(current);
+                WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                p.x = defaults[0];
+                p.y = defaults[1];
+                p.width = defaults[2];
+                p.height = defaults[3];
+                activity.getWindow().setAttributes(p);
+                saveBounds(activity);
+                android.util.Log.d("FukuFloating", "Title-bar long press reset window to centered bounds");
+                return true;
+            }
+        });
+        title.setOnTouchListener(new View.OnTouchListener() {
+            float downX, downY;
+            int startX, startY;
+            boolean dragging;
+            @Override public boolean onTouch(View view, MotionEvent event) {
+                WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = event.getRawX();
+                        downY = event.getRawY();
+                        startX = p.x;
+                        startY = p.y;
+                        dragging = false;
+                        return false;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = event.getRawX() - downX;
+                        float dy = event.getRawY() - downY;
+                        if (!dragging && (Math.abs(dx) > Math.round(8 * density)
+                                || Math.abs(dy) > Math.round(8 * density))) {
+                            dragging = true;
+                        }
+                        if (dragging) {
+                            p.x = clamp(startX + Math.round(dx), -p.width + Math.round(72 * density),
+                                    Math.max(0, current.widthPixels - Math.round(72 * density)));
+                            p.y = clamp(startY + Math.round(dy), 0,
+                                    Math.max(0, current.heightPixels - Math.round(38 * density)));
+                            activity.getWindow().setAttributes(p);
+                        }
+                        return false;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        dragging = false;
+                        return false;
+                    default:
+                        return false;
+                }
+            }
+        });
         bar.addView(title, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                 Gravity.CENTER));
@@ -342,7 +431,8 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                         p.y = startY + Math.round(event.getRawY() - downY);
                         p.x = clamp(p.x, -p.width + Math.round(72 * density),
                                 Math.max(0, current.widthPixels - Math.round(72 * density)));
-                        p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - Math.round(36 * density)));
+                        int barHeight = Math.round(38 * density);
+                        p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - barHeight));
                         activity.getWindow().setAttributes(p);
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -411,7 +501,10 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         synchronized (LOCK) {
             INSTALLED.add(activity);
             DECORATIONS.put(activity, wrapper);
+            INSTALL_RETRIES.remove(activity);
         }
+        android.util.Log.d("FukuFloating", "Installed floating title bar with bounds x=" + windowParams.x
+                + ", y=" + windowParams.y + ", w=" + windowParams.width + ", h=" + windowParams.height);
     }
 
     private static TextView button(Context context, String label, float density,
@@ -432,22 +525,149 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         return Math.max(min, Math.min(max, value));
     }
 
+    private static int clampDimension(int value, int min, int max) {
+        if (max <= 0) return Math.max(1, value);
+        return Math.min(max, Math.max(Math.min(min, max), value));
+    }
+
+    private static int[] defaultBounds(DisplayMetrics metrics) {
+        float density = metrics.density;
+        int width = clampDimension(Math.round(metrics.widthPixels * 0.82f),
+                Math.round(260 * density), metrics.widthPixels);
+        int height = clampDimension(Math.round(metrics.heightPixels * 0.78f),
+                Math.round(180 * density), metrics.heightPixels);
+        return new int[] {
+                Math.max(0, (metrics.widthPixels - width) / 2),
+                Math.max(0, (metrics.heightPixels - height) / 2),
+                width, height
+        };
+    }
+
+    private static boolean screenSizeChangedALot(int oldWidth, int oldHeight,
+                                                  int newWidth, int newHeight) {
+        if (oldWidth <= 0 || oldHeight <= 0) return true;
+        double widthChange = Math.abs(newWidth - oldWidth) / (double) oldWidth;
+        double heightChange = Math.abs(newHeight - oldHeight) / (double) oldHeight;
+        double oldRatio = oldWidth / (double) oldHeight;
+        double newRatio = newWidth / (double) newHeight;
+        double ratioChange = Math.abs(newRatio - oldRatio) / oldRatio;
+        return widthChange > 0.20 || heightChange > 0.20 || ratioChange > 0.20;
+    }
+
+    private static void markRunDirty(Activity activity) {
+        synchronized (LOCK) {
+            if (startupStateRead) return;
+            SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            previousRunDirty = !prefs.getBoolean("clean_exit", true);
+            startupStateRead = true;
+            boolean saved = prefs.edit().putBoolean("clean_exit", false).commit();
+            android.util.Log.d("FukuFloating", "Previous run dirty flag=" + previousRunDirty
+                    + ", marked current run dirty (saved=" + saved + ")");
+        }
+    }
+
+    private static void markRunClean(Activity activity) {
+        SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean saved = prefs.edit().putBoolean("clean_exit", true).commit();
+        android.util.Log.d("FukuFloating", "Marked run clean on finishing activity (saved=" + saved + ")");
+    }
+
+    private static void recordInstallRetry(Activity activity, ViewGroup decor, String reason) {
+        ViewTreeObserver.OnGlobalLayoutListener remove = null;
+        synchronized (LOCK) {
+            int attempts = INSTALL_RETRIES.containsKey(activity) ? INSTALL_RETRIES.get(activity) + 1 : 1;
+            INSTALL_RETRIES.put(activity, attempts);
+            android.util.Log.w("FukuFloating", "Title-bar setup retry " + attempts + "/"
+                    + MAX_INSTALL_RETRIES + ": " + reason);
+            if (attempts >= MAX_INSTALL_RETRIES) {
+                remove = LAYOUT_LISTENERS.remove(activity);
+                INSTALL_RETRIES.remove(activity);
+                android.util.Log.w("FukuFloating", "Stopped title-bar retries after "
+                        + MAX_INSTALL_RETRIES + " attempts");
+            }
+        }
+        if (remove != null) {
+            ViewTreeObserver observer = decor.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnGlobalLayoutListener(remove);
+        }
+    }
+
+    private static int[] loadValidatedBounds(Activity activity, DisplayMetrics metrics,
+                                             boolean dirty) {
+        int[] saved = loadBounds(activity);
+        android.util.Log.d("FukuFloating", "Loaded saved bounds="
+                + (saved == null ? "none" : "x=" + saved[0] + ",y=" + saved[1]
+                + ",w=" + saved[2] + ",h=" + saved[3] + ",screen=" + saved[4] + "x" + saved[5])
+                + ", dirty flag=" + dirty);
+
+        if (dirty || saved == null) {
+            int[] defaults = defaultBounds(metrics);
+            android.util.Log.d("FukuFloating", "Validated bounds=default centered (dirty or no saved bounds)");
+            return defaults;
+        }
+
+        float density = metrics.density;
+        int minWidth = Math.round(260 * density);
+        int minHeight = Math.round(180 * density);
+        int barHeight = Math.round(38 * density);
+        if (saved[2] <= 0 || saved[3] <= 0
+                || saved[0] < -metrics.widthPixels * 2 || saved[0] > metrics.widthPixels * 2
+                || saved[1] < -metrics.heightPixels * 2 || saved[1] > metrics.heightPixels * 2
+                || screenSizeChangedALot(saved[4], saved[5], metrics.widthPixels, metrics.heightPixels)) {
+            int[] defaults = defaultBounds(metrics);
+            android.util.Log.d("FukuFloating", "Validated bounds=default centered (saved bounds invalid or screen changed)");
+            return defaults;
+        }
+
+        int width = clampDimension(saved[2], minWidth, metrics.widthPixels);
+        int height = clampDimension(saved[3], minHeight, metrics.heightPixels);
+        int x = clamp(saved[0], -width + Math.round(72 * density),
+                Math.max(0, metrics.widthPixels - Math.round(72 * density)));
+        int y = clamp(saved[1], 0, Math.max(0, metrics.heightPixels - barHeight));
+        int[] validated = new int[] {x, y, width, height};
+        android.util.Log.d("FukuFloating", "Validated bounds=x=" + x + ",y=" + y
+                + ",w=" + width + ",h=" + height);
+        return validated;
+    }
+
     private static String boundsKey(Activity activity, String suffix) {
         return BOUNDS_PREFIX + activity.getClass().getName() + "." + suffix;
     }
 
     private static void saveBounds(Activity activity) {
         try {
+            final View wrapper;
+            synchronized (LOCK) {
+                wrapper = DECORATIONS.get(activity);
+            }
+            if (wrapper == null || !(wrapper.getTag() instanceof DecorationState)) return;
+            DecorationState state = (DecorationState) wrapper.getTag();
+            View decor = activity.getWindow().getDecorView();
+            if (wrapper.getParent() != decor || state.bar.getParent() != wrapper) return;
+
+            DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
             WindowManager.LayoutParams p = activity.getWindow().getAttributes();
             if (p.width <= 0 || p.height <= 0) return;
+            int barHeight = Math.round(38 * metrics.density);
+            int minVisible = Math.round(72 * metrics.density);
+            if (p.x < -p.width + minVisible || p.x > metrics.widthPixels - minVisible
+                    || p.y < 0 || p.y + barHeight > metrics.heightPixels) {
+                android.util.Log.w("FukuFloating", "Skipped saving invalid/off-screen floating bounds");
+                return;
+            }
+
             SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             prefs.edit()
                     .putInt(boundsKey(activity, "x"), p.x)
                     .putInt(boundsKey(activity, "y"), p.y)
                     .putInt(boundsKey(activity, "w"), p.width)
                     .putInt(boundsKey(activity, "h"), p.height)
+                    .putInt(boundsKey(activity, "screen_width"), metrics.widthPixels)
+                    .putInt(boundsKey(activity, "screen_height"), metrics.heightPixels)
                     .apply();
-        } catch (Throwable ignored) {}
+        } catch (Throwable error) {
+            android.util.Log.w("FukuFloating", "Could not save floating bounds", error);
+        }
     }
 
     private static int[] loadBounds(Activity activity) {
@@ -458,7 +678,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         return new int[] {
                 prefs.getInt(boundsKey(activity, "x"), 0),
                 prefs.getInt(boundsKey(activity, "y"), 0),
-                width, height
+                width, height,
+                prefs.getInt(boundsKey(activity, "screen_width"), 0),
+                prefs.getInt(boundsKey(activity, "screen_height"), 0)
         };
     }
 }
