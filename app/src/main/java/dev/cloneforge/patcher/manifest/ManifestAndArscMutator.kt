@@ -620,7 +620,8 @@ class ManifestAndArscMutator {
                     continue
                 }
                 val foregroundId = drawableAttribute.getData()
-                val foregroundResource = table.getResource(foregroundId) ?: run {
+                val foregroundResource = table.getResource(foregroundId)
+                if (foregroundResource == null) {
                     Log.w(LOG_TAG, "Could not resolve adaptive foreground resource 0x${foregroundId.toString(16)} in ${xmlEntry.name}")
                     continue
                 }
