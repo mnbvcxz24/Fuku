@@ -774,6 +774,9 @@ private fun FukuHome(
                         onValueChange = { customAppName = it.take(48).replace("\n", "").replace("\r", "") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
                         placeholder = { Text(workspace.appLabel) },
                         supportingText = { Text(if (customAppName.isBlank()) "Default: ${workspace.appLabel} Fuku 1" else "Clone names: ${customAppName.trim()} 1, ${customAppName.trim()} 2, ...") }
                     )
