@@ -14,6 +14,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -35,7 +36,26 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     private static final Set<Activity> INSTALLED =
             Collections.newSetFromMap(new WeakHashMap<Activity, Boolean>());
     private static final Map<Activity, View> DECORATIONS = new WeakHashMap<>();
+    private static final Map<Activity, ViewTreeObserver.OnGlobalLayoutListener> LAYOUT_LISTENERS =
+            new WeakHashMap<>();
     private static boolean callbacksRegistered;
+
+    private static final class DecorationState {
+        final View bar;
+        final FrameLayout contentHost;
+        final ViewGroup.LayoutParams decorLayoutParams;
+        int lastScreenWidth;
+        int lastScreenHeight;
+
+        DecorationState(View bar, FrameLayout contentHost,
+                        ViewGroup.LayoutParams decorLayoutParams, DisplayMetrics metrics) {
+            this.bar = bar;
+            this.contentHost = contentHost;
+            this.decorLayoutParams = decorLayoutParams;
+            this.lastScreenWidth = metrics.widthPixels;
+            this.lastScreenHeight = metrics.heightPixels;
+        }
+    }
 
     private FloatingWindow() {}
 
@@ -103,23 +123,109 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
 
     @Override public void onActivityDestroyed(Activity activity) {
         if (activity.isFinishing()) FloatingBubble.hide(activity.getTaskId());
+        View decor = activity.getWindow() != null ? activity.getWindow().getDecorView() : null;
         synchronized (LOCK) {
+            ViewTreeObserver.OnGlobalLayoutListener listener = LAYOUT_LISTENERS.remove(activity);
+            if (listener != null && decor != null) {
+                ViewTreeObserver observer = decor.getViewTreeObserver();
+                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(listener);
+            }
             INSTALLED.remove(activity);
             DECORATIONS.remove(activity);
         }
     }
 
     private void setup(final Activity activity) {
+        final View decorView = activity.getWindow().getDecorView();
+        if (!(decorView instanceof ViewGroup)) return;
+        final ViewGroup decor = (ViewGroup) decorView;
+
         synchronized (LOCK) {
             if (INSTALLED.contains(activity)) return;
+            if (LAYOUT_LISTENERS.containsKey(activity)) return;
         }
 
-        Window window = activity.getWindow();
-        View contentView = window.findViewById(android.R.id.content);
-        final FrameLayout content = ensureFrameLayout(activity, contentView);
-        if (content == null) return;
-        if (content.getTag() != null && content.getTag() instanceof String
-                && "fuku-floating-decorated".equals(content.getTag())) return;
+        final ViewTreeObserver.OnGlobalLayoutListener listener =
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+
+                final View wrapper;
+                synchronized (LOCK) {
+                    wrapper = DECORATIONS.get(activity);
+                }
+                if (wrapper == null) {
+                    installDecoration(activity, decor);
+                    return;
+                }
+
+                Object tag = wrapper.getTag();
+                if (!(tag instanceof DecorationState)) return;
+                DecorationState state = (DecorationState) tag;
+
+                if (wrapper.getParent() != decor) {
+                    if (wrapper.getParent() instanceof ViewGroup) {
+                        ((ViewGroup) wrapper.getParent()).removeView(wrapper);
+                    }
+                    if (wrapper.getParent() == null) {
+                        decor.addView(wrapper, 0, state.decorLayoutParams);
+                    }
+                }
+
+                if (state.bar.getParent() != wrapper) {
+                    if (state.bar.getParent() instanceof ViewGroup) {
+                        ((ViewGroup) state.bar.getParent()).removeView(state.bar);
+                    }
+                    ((LinearLayout) wrapper).addView(state.bar, 0, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, Math.round(
+                                    38 * activity.getResources().getDisplayMetrics().density)));
+                }
+                if (state.bar.getVisibility() != View.VISIBLE) {
+                    state.bar.setVisibility(View.VISIBLE);
+                }
+
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
+                if (state.lastScreenWidth != current.widthPixels
+                        || state.lastScreenHeight != current.heightPixels) {
+                    state.lastScreenWidth = current.widthPixels;
+                    state.lastScreenHeight = current.heightPixels;
+                    float density = current.density;
+                    WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                    p.width = clamp(p.width, Math.round(260 * density), current.widthPixels);
+                    p.height = clamp(p.height, Math.round(180 * density), current.heightPixels);
+                    p.x = clamp(p.x, -p.width + Math.round(72 * density),
+                            Math.max(0, current.widthPixels - Math.round(72 * density)));
+                    p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - Math.round(36 * density)));
+                    activity.getWindow().setAttributes(p);
+                }
+            }
+        };
+
+        synchronized (LOCK) {
+            LAYOUT_LISTENERS.put(activity, listener);
+        }
+        ViewTreeObserver observer = decor.getViewTreeObserver();
+        if (observer.isAlive()) observer.addOnGlobalLayoutListener(listener);
+        installDecoration(activity, decor);
+    }
+
+    private void installDecoration(final Activity activity, final ViewGroup decor) {
+        synchronized (LOCK) {
+            if (INSTALLED.contains(activity) || activity.isFinishing() || activity.isDestroyed()) return;
+        }
+        if (decor.getChildCount() == 0) return;
+
+        final View appRoot = decor.getChildAt(0);
+        if (!(appRoot.getParent() instanceof ViewGroup)) {
+            android.util.Log.w("FukuFloating", "Cannot wrap decor root: parent is not a ViewGroup");
+            return;
+        }
+        final ViewGroup rootParent = (ViewGroup) appRoot.getParent();
+        if (rootParent != decor) {
+            android.util.Log.w("FukuFloating", "Cannot wrap decor root: unexpected parent "
+                    + rootParent.getClass().getName());
+            return;
+        }
 
         final DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
         final float density = metrics.density;
@@ -134,51 +240,29 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             };
         }
 
-        WindowManager.LayoutParams params = window.getAttributes();
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.x = bounds[0];
-        params.y = bounds[1];
-        params.width = clamp(bounds[2], Math.round(260 * density), metrics.widthPixels);
-        params.height = clamp(bounds[3], Math.round(180 * density), metrics.heightPixels);
-        params.dimAmount = 0f;
+        Window window = activity.getWindow();
+        WindowManager.LayoutParams windowParams = window.getAttributes();
+        windowParams.gravity = Gravity.TOP | Gravity.START;
+        windowParams.x = bounds[0];
+        windowParams.y = bounds[1];
+        windowParams.width = clamp(bounds[2], Math.round(260 * density), metrics.widthPixels);
+        windowParams.height = clamp(bounds[3], Math.round(180 * density), metrics.heightPixels);
+        windowParams.dimAmount = 0f;
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
         window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
-        window.setAttributes(params);
+        window.setAttributes(windowParams);
 
         final int barHeight = Math.round(38 * density);
-
-        // Reserve real layout space for the title bar in the content frame.
-        // A top margin on the app's root view can be lost or overridden by
-        // some app layouts, causing the title bar to cover the app content.
-        // Padding moves the content area's layout bounds below the bar without
-        // changing or reparenting the app's view hierarchy.
-        // Allow the title bar to draw into the reserved top-padding area.
-        // Without this, FrameLayout clips the negatively translated bar.
-        content.setClipToPadding(false);
-        content.setPadding(content.getPaddingLeft(),
-                content.getPaddingTop() + barHeight,
-                content.getPaddingRight(), content.getPaddingBottom());
-
-        final View appContent = content.getChildCount() > 0 ? content.getChildAt(0) : null;
-        if (appContent != null) {
-            FrameLayout.LayoutParams appParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-                    Gravity.TOP);
-            appContent.setLayoutParams(appParams);
-        }
+        final LinearLayout wrapper = new LinearLayout(activity);
+        wrapper.setOrientation(LinearLayout.VERTICAL);
+        wrapper.setTag(null);
 
         final LinearLayout bar = new LinearLayout(activity);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setBackgroundColor(0xFF202124);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setElevation(8 * density);
-        final FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, barHeight, Gravity.TOP);
-        bar.setLayoutParams(barParams);
-        // The content frame's top padding reserves the bar's space for the app.
-        // Shift the bar back up so it remains visible at the top edge.
-        bar.setTranslationY(-barHeight);
 
         final TextView title = new TextView(activity);
         title.setText(activity.getApplicationInfo().loadLabel(activity.getPackageManager()));
@@ -191,24 +275,22 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
 
         final boolean[] maximized = {false};
         final int[][] previous = {null};
-        final View[] resizeHandle = {null};
 
-        // Send the whole clone task to the background and leave a draggable overlay bubble.
-        final TextView minimizeButton = button(activity, "–", density, new View.OnClickListener() {
+        TextView minimizeButton = button(activity, "–", density, new View.OnClickListener() {
             @Override public void onClick(View view) { FloatingBubble.minimize(activity); }
         });
         bar.addView(minimizeButton);
 
-
-        final TextView maximizeButton = button(activity, "□", density, new View.OnClickListener() {
+        TextView maximizeButton = button(activity, "□", density, new View.OnClickListener() {
             @Override public void onClick(View view) {
                 WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
                 if (!maximized[0]) {
                     previous[0] = new int[] {p.x, p.y, p.width, p.height};
                     p.x = 0;
                     p.y = 0;
-                    p.width = metrics.widthPixels;
-                    p.height = metrics.heightPixels;
+                    p.width = current.widthPixels;
+                    p.height = current.heightPixels;
                 } else if (previous[0] != null) {
                     p.x = previous[0][0];
                     p.y = previous[0][1];
@@ -221,7 +303,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         });
         bar.addView(maximizeButton);
 
-        final TextView closeButton = button(activity, "×", density, new View.OnClickListener() {
+        TextView closeButton = button(activity, "×", density, new View.OnClickListener() {
             @Override public void onClick(View view) { activity.finish(); }
         });
         bar.addView(closeButton);
@@ -231,6 +313,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             int startX, startY;
             @Override public boolean onTouch(View view, MotionEvent event) {
                 WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = event.getRawX();
@@ -242,8 +325,8 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                         p.x = startX + Math.round(event.getRawX() - downX);
                         p.y = startY + Math.round(event.getRawY() - downY);
                         p.x = clamp(p.x, -p.width + Math.round(72 * density),
-                                Math.max(0, metrics.widthPixels - Math.round(72 * density)));
-                        p.y = clamp(p.y, 0, Math.max(0, metrics.heightPixels - Math.round(36 * density)));
+                                Math.max(0, current.widthPixels - Math.round(72 * density)));
+                        p.y = clamp(p.y, 0, Math.max(0, current.heightPixels - Math.round(36 * density)));
                         activity.getWindow().setAttributes(p);
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -256,9 +339,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             }
         });
 
+        final FrameLayout contentHost = new FrameLayout(activity);
         final int handleSize = Math.round(30 * density);
         View handle = new View(activity);
-        resizeHandle[0] = handle;
         handle.setBackgroundColor(0x66808080);
         handle.setContentDescription("Resize floating window");
         FrameLayout.LayoutParams handleParams = new FrameLayout.LayoutParams(
@@ -269,6 +352,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             int startWidth, startHeight;
             @Override public boolean onTouch(View view, MotionEvent event) {
                 WindowManager.LayoutParams p = activity.getWindow().getAttributes();
+                DisplayMetrics current = activity.getResources().getDisplayMetrics();
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = event.getRawX();
@@ -278,9 +362,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         p.width = clamp(startWidth + Math.round(event.getRawX() - downX),
-                                Math.round(260 * density), metrics.widthPixels);
+                                Math.round(260 * density), current.widthPixels);
                         p.height = clamp(startHeight + Math.round(event.getRawY() - downY),
-                                Math.round(180 * density), metrics.heightPixels);
+                                Math.round(180 * density), current.heightPixels);
                         activity.getWindow().setAttributes(p);
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -293,40 +377,25 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
             }
         });
 
-        content.addView(bar);
-        content.addView(handle);
-        content.setTag("fuku-floating-decorated");
+        ViewGroup.LayoutParams originalDecorParams = appRoot.getLayoutParams();
+        decor.removeView(appRoot);
+        contentHost.addView(appRoot, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        contentHost.addView(handle, handleParams);
+        wrapper.addView(bar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, barHeight));
+        wrapper.addView(contentHost, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        DecorationState state = new DecorationState(bar, contentHost, originalDecorParams,
+                activity.getResources().getDisplayMetrics());
+        wrapper.setTag(state);
+        decor.addView(wrapper, 0, originalDecorParams);
+
         synchronized (LOCK) {
             INSTALLED.add(activity);
-            DECORATIONS.put(activity, bar);
+            DECORATIONS.put(activity, wrapper);
         }
-    }
-
-    private static FrameLayout ensureFrameLayout(Activity activity, View contentView) {
-        if (contentView instanceof FrameLayout) return (FrameLayout) contentView;
-        if (contentView == null) {
-            android.util.Log.w("FukuFloating", "Cannot install floating controls: android.R.id.content is missing");
-            return null;
-        }
-        if (!(contentView.getParent() instanceof ViewGroup)) {
-            android.util.Log.w("FukuFloating", "Cannot wrap android.R.id.content: it has no ViewGroup parent ("
-                    + contentView.getClass().getName() + ")");
-            return null;
-        }
-
-        ViewGroup parent = (ViewGroup) contentView.getParent();
-        int index = parent.indexOfChild(contentView);
-        ViewGroup.LayoutParams oldParams = contentView.getLayoutParams();
-        parent.removeView(contentView);
-        FrameLayout wrapper = new FrameLayout(activity);
-        wrapper.setId(android.R.id.content);
-        if (contentView.getId() == android.R.id.content) contentView.setId(View.NO_ID);
-        parent.addView(wrapper, index, oldParams);
-        wrapper.addView(contentView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        android.util.Log.w("FukuFloating", "Wrapped non-FrameLayout android.R.id.content ("
-                + contentView.getClass().getName() + ") in FrameLayout");
-        return wrapper;
     }
 
     private static TextView button(Context context, String label, float density,
