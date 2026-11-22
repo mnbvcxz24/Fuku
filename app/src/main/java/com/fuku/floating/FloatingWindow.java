@@ -147,12 +147,21 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         window.setAttributes(params);
 
         final int barHeight = Math.round(38 * density);
+
+        // Reserve real layout space for the title bar in the content frame.
+        // A top margin on the app's root view can be lost or overridden by
+        // some app layouts, causing the title bar to cover the app content.
+        // Padding moves the content area's layout bounds below the bar without
+        // changing or reparenting the app's view hierarchy.
+        content.setPadding(content.getPaddingLeft(),
+                content.getPaddingTop() + barHeight,
+                content.getPaddingRight(), content.getPaddingBottom());
+
         final View appContent = content.getChildCount() > 0 ? content.getChildAt(0) : null;
         if (appContent != null) {
             FrameLayout.LayoutParams appParams = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                     Gravity.TOP);
-            appParams.topMargin = barHeight;
             appContent.setLayoutParams(appParams);
         }
 
@@ -164,6 +173,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         final FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, barHeight, Gravity.TOP);
         bar.setLayoutParams(barParams);
+        // The content frame's top padding reserves the bar's space for the app.
+        // Shift the bar back up so it remains visible at the top edge.
+        bar.setTranslationY(-barHeight);
 
         final TextView title = new TextView(activity);
         title.setText(activity.getApplicationInfo().loadLabel(activity.getPackageManager()));
