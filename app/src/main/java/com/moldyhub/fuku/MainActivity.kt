@@ -575,7 +575,7 @@ private fun FukuHome(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             val iconBitmap = remember(clone.packageName) {
-                                clone.icon.toBitmap(width = 96, height = 96).asImageBitmap()
+                                clone.icon.toBitmap(width = 256, height = 256).asImageBitmap()
                             }
                             Image(bitmap = iconBitmap, contentDescription = "${clone.label} icon", modifier = Modifier.size(38.dp))
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -622,7 +622,7 @@ private fun FukuHome(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             val iconBitmap = remember(app.packageName) {
-                                app.icon.toBitmap(width = 96, height = 96).asImageBitmap()
+                                app.icon.toBitmap(width = 256, height = 256).asImageBitmap()
                             }
                             Image(
                                 bitmap = iconBitmap,
