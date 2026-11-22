@@ -111,7 +111,7 @@ class ManifestAndArscMutator {
         customAppLabel: String,
         forceLandscape: Boolean = false,
         floatingDialogThemeId: Int?,
-        launcherIconBytes: ByteArray? = null
+        launcherIconBytesByDensity: Map<String, ByteArray>? = null
     ): MutationResult {
         Log.d(LOG_TAG, "Mutating base APK manifest: $baseApkFile")
         try {
@@ -273,7 +273,7 @@ class ManifestAndArscMutator {
 
         // 8. Patch the clone's launcher icon before signing. The manifest resource IDs
         // remain intact; their resource-table file values point to the clone-owned PNG.
-        launcherIconBytes?.let { patchLauncherIconResources(apkModule, manifest, appElement, it) }
+        launcherIconBytesByDensity?.let { patchLauncherIconResources(apkModule, manifest, appElement, it) }
 
         // 9. Patch application and original launcher labels.
         patchApplicationAndLauncherLabels(appElement, customAppLabel)
@@ -516,7 +516,7 @@ class ManifestAndArscMutator {
         apkModule: ApkModule,
         manifest: AndroidManifestBlock,
         appElement: ResXmlElement,
-        iconBytes: ByteArray
+        iconBytesByDensity: Map<String, ByteArray>
     ) {
         val table = apkModule.getTableBlock()
             ?: throw IOException("The source APK has no resource table for its launcher icon.")
@@ -525,7 +525,6 @@ class ManifestAndArscMutator {
         manifest.getIconResourceId().takeIf { it != 0 }?.let(iconIds::add)
         manifest.getRoundIconResourceId().takeIf { it != 0 }?.let(iconIds::add)
 
-        // Some apps put the actual icon on their MAIN/LAUNCHER activity alias.
         for (component in collectComponents(appElement)) {
             if (!isLauncherComponent(component)) continue
             for (attributeId in intArrayOf(ATTR_ICON, ATTR_ROUND_ICON)) {
@@ -540,26 +539,58 @@ class ManifestAndArscMutator {
             throw IOException("The source APK does not expose a replaceable launcher icon resource.")
         }
 
-        val iconPaths = linkedSetOf<String>()
+        val iconFiles = linkedMapOf<String, ByteArray>()
+        var replacedEntries = 0
         for (resourceId in iconIds) {
             val resource = table.getResource(resourceId)
                 ?: throw IOException("Could not resolve launcher icon resource 0x${resourceId.toString(16)}.")
             val resourceType = resource.getType().orEmpty()
                 .takeIf { it == "drawable" || it == "mipmap" } ?: "mipmap"
-            val iconPath = "res/${resourceType}-nodpi/fuku_clone_icon.webp"
-            var valueCount = 0
+
             for (entry in resource) {
+                val config = entry.getResConfig()
+                val qualifier = config?.getQualifiers().orEmpty()
+                val originalPath = entry.getValueAsString().orEmpty()
+
+                // Adaptive icons and other XML drawables must retain their XML structure.
+                // Replacing the XML resource with a bitmap destroys foreground/background layers.
+                if (originalPath.endsWith(".xml", ignoreCase = true)) {
+                    Log.w(LOG_TAG, "Preserving XML launcher icon entry: id=0x${resourceId.toString(16)}, config=$qualifier, path=$originalPath")
+                    continue
+                }
+
+                val density = config?.getDensity()?.toString()?.lowercase()
+                val assetKey = when (density) {
+                    "mdpi" -> "mdpi"
+                    "hdpi" -> "hdpi"
+                    "xhdpi" -> "xhdpi"
+                    "xxhdpi" -> "xxhdpi"
+                    "xxxhdpi" -> "xxxhdpi"
+                    else -> "nodpi"
+                }
+                val pixelSize = when (assetKey) {
+                    "mdpi" -> 48
+                    "hdpi" -> 72
+                    "xhdpi" -> 96
+                    "xxhdpi" -> 144
+                    else -> 192
+                }
+                val folderQualifier = if (assetKey == "nodpi") "nodpi" else assetKey
+                val iconPath = "res/${resourceType}-${folderQualifier}/fuku_clone_icon.webp"
+                val bytes = iconBytesByDensity[assetKey]
+                    ?: throw IOException("Missing $assetKey launcher icon image.")
                 entry.setValueAsString(iconPath)
-                valueCount++
+                iconFiles[iconPath] = bytes
+                replacedEntries++
+                Log.d(LOG_TAG, "Launcher icon entry: id=0x${resourceId.toString(16)}, config=$qualifier, path=$iconPath, size=${pixelSize}px")
             }
-            if (valueCount == 0) {
-                throw IOException("Launcher icon resource 0x${resourceId.toString(16)} has no values.")
-            }
-            iconPaths.add(iconPath)
         }
 
-        iconPaths.forEach { path -> apkModule.add(ByteInputSource(iconBytes, path)) }
-        Log.d(LOG_TAG, "Replaced ${iconIds.size} launcher icon resource(s) with the Fuku clone icon.")
+        if (replacedEntries == 0) {
+            Log.w(LOG_TAG, "No bitmap launcher icon entries were replaced; XML/adaptive icons were preserved.")
+        }
+        iconFiles.forEach { (path, bytes) -> apkModule.add(ByteInputSource(bytes, path)) }
+        Log.d(LOG_TAG, "Replaced $replacedEntries bitmap launcher icon entry/entries with density-specific assets.")
     }
 
     private fun patchApplicationAndLauncherLabels(appElement: ResXmlElement, customLabel: String) {
