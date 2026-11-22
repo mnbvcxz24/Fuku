@@ -12,13 +12,12 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.floor
 import kotlin.math.min
-import kotlin.math.sin
 
 object CloneIconProcessor {
-    private const val ICON_SIZE = 512
+    private const val ICON_SIZE = 887
 
     fun importIcon(context: Context, uri: Uri): File {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -93,31 +92,18 @@ object CloneIconProcessor {
     }
 
     private fun applyHue(source: Bitmap, degrees: Float): Bitmap {
-        val radians = Math.toRadians(degrees.toDouble())
-        val cosine = cos(radians).toFloat()
-        val sine = sin(radians).toFloat()
-        val matrix = ColorMatrix(floatArrayOf(
-            0.213f + cosine * 0.787f - sine * 0.213f,
-            0.715f - cosine * 0.715f - sine * 0.715f,
-            0.072f - cosine * 0.072f + sine * 0.928f, 0f, 0f,
-            0.213f - cosine * 0.213f + sine * 0.143f,
-            0.715f + cosine * 0.285f + sine * 0.140f,
-            0.072f - cosine * 0.072f - sine * 0.283f, 0f, 0f,
-            0.213f - cosine * 0.213f - sine * 0.787f,
-            0.715f - cosine * 0.715f + sine * 0.715f,
-            0.072f + cosine * 0.928f + sine * 0.072f, 0f, 0f,
-            0f, 0f, 0f, 1f, 0f
-        ))
-        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(matrix)
+        // Rotate hue in HSV space so saturation, brightness, and alpha remain intact.
+        // This avoids the channel mixing and color shifts of an RGB color-matrix rotation.
+        val pixels = IntArray(source.width * source.height)
+        source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        val hsv = FloatArray(3)
+        for (index in pixels.indices) {
+            val color = pixels[index]
+            if ((color ushr 24) == 0) continue
+            android.graphics.Color.colorToHSV(color, hsv)
+            hsv[0] = (hsv[0] + degrees) % 360f
+            pixels[index] = android.graphics.Color.HSVToColor(android.graphics.Color.alpha(color), hsv)
         }
-        Canvas(output).drawBitmap(
-            source,
-            null,
-            Rect(0, 0, output.width, output.height),
-            paint
-        )
-        return output
+        return Bitmap.createBitmap(pixels, source.width, source.height, Bitmap.Config.ARGB_8888)
     }
 }
