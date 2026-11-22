@@ -546,7 +546,7 @@ class ManifestAndArscMutator {
                 ?: throw IOException("Could not resolve launcher icon resource 0x${resourceId.toString(16)}.")
             val resourceType = resource.getType().orEmpty()
                 .takeIf { it == "drawable" || it == "mipmap" } ?: "mipmap"
-            val iconPath = "res/${resourceType}-nodpi/fuku_clone_icon.png"
+            val iconPath = "res/${resourceType}-nodpi/fuku_clone_icon.webp"
             var valueCount = 0
             for (entry in resource) {
                 entry.setValueAsString(iconPath)
