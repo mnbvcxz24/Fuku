@@ -111,7 +111,8 @@ class ManifestAndArscMutator {
         customAppLabel: String,
         forceLandscape: Boolean = false,
         floatingDialogThemeId: Int?,
-        launcherIconBytesByDensity: Map<String, ByteArray>? = null
+        launcherIconBytesByDensity: Map<String, ByteArray>? = null,
+        adaptiveForegroundBytesByDensity: Map<String, ByteArray>? = null
     ): MutationResult {
         Log.d(LOG_TAG, "Mutating base APK manifest: $baseApkFile")
         try {
@@ -273,7 +274,15 @@ class ManifestAndArscMutator {
 
         // 8. Patch the clone's launcher icon before signing. The manifest resource IDs
         // remain intact; their resource-table file values point to the clone-owned PNG.
-        launcherIconBytesByDensity?.let { patchLauncherIconResources(apkModule, manifest, appElement, it) }
+        launcherIconBytesByDensity?.let {
+            patchLauncherIconResources(
+                apkModule,
+                manifest,
+                appElement,
+                it,
+                adaptiveForegroundBytesByDensity.orEmpty()
+            )
+        }
 
         // 9. Patch application and original launcher labels.
         patchApplicationAndLauncherLabels(appElement, customAppLabel)
@@ -516,7 +525,8 @@ class ManifestAndArscMutator {
         apkModule: ApkModule,
         manifest: AndroidManifestBlock,
         appElement: ResXmlElement,
-        iconBytesByDensity: Map<String, ByteArray>
+        iconBytesByDensity: Map<String, ByteArray>,
+        adaptiveForegroundBytesByDensity: Map<String, ByteArray>
     ) {
         val table = apkModule.getTableBlock()
             ?: throw IOException("The source APK has no resource table for its launcher icon.")
@@ -585,7 +595,70 @@ class ManifestAndArscMutator {
         if (replacedEntries == 0) {
             Log.w(LOG_TAG, "No bitmap launcher icon entries were replaced; XML/adaptive icons were preserved.")
         }
+        val adaptiveFiles = linkedMapOf<String, ByteArray>()
+        val zipMap = apkModule.zipEntryMap
+        if (zipMap != null && adaptiveForegroundBytesByDensity.isNotEmpty()) {
+            val xmlCandidates = ArrayList<InputSource>()
+            for (zipEntry in zipMap) {
+                val name = zipEntry.name ?: continue
+                if (name.startsWith("res/") && name.endsWith(".xml")) {
+                    xmlCandidates.add(zipEntry)
+                }
+            }
+            var adaptiveEntriesReplaced = 0
+            for (xmlEntry in xmlCandidates) {
+                if (!ResXmlDocument.isResXmlBlock(xmlEntry)) continue
+                val document = apkModule.loadResXmlDocument(xmlEntry) ?: continue
+                val root = document.documentElement ?: continue
+                if (!root.equalsName("adaptive-icon")) continue
+
+                val foreground = CollectionUtil.toList(root.getElements("foreground")).firstOrNull()
+                    ?: continue
+                val drawableAttribute = foreground.searchAttributeByName("drawable") ?: continue
+                if (!drawableAttribute.getValueType().isReference()) {
+                    Log.w(LOG_TAG, "Adaptive icon foreground is not a resource reference: ${xmlEntry.name}")
+                    continue
+                }
+                val foregroundId = drawableAttribute.getData()
+                val foregroundResource = table.getResource(foregroundId) ?: run {
+                    Log.w(LOG_TAG, "Could not resolve adaptive foreground resource 0x${foregroundId.toString(16)} in ${xmlEntry.name}")
+                    continue
+                }
+                val foregroundType = foregroundResource.getType().orEmpty()
+                    .takeIf { it == "drawable" || it == "mipmap" } ?: "drawable"
+
+                for (foregroundEntry in foregroundResource) {
+                    val qualifier = foregroundEntry.getResConfig()?.getQualifiers().orEmpty()
+                    val density = qualifier.split("-").firstOrNull {
+                        it in setOf("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+                    }
+                    val assetKey = density ?: "nodpi"
+                    val pixelSize = when (assetKey) {
+                        "mdpi" -> 108
+                        "hdpi" -> 162
+                        "xhdpi" -> 216
+                        "xxhdpi" -> 324
+                        else -> 432
+                    }
+                    val folderQualifier = if (assetKey == "nodpi") "nodpi" else assetKey
+                    val extension = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) "webp" else "png"
+                    val iconPath = "res/${foregroundType}-${folderQualifier}/fuku_clone_adaptive_foreground.$extension"
+                    val bytes = adaptiveForegroundBytesByDensity[assetKey]
+                        ?: throw IOException("Missing $assetKey adaptive foreground image.")
+                    foregroundEntry.setValueAsString(iconPath)
+                    adaptiveFiles[iconPath] = bytes
+                    adaptiveEntriesReplaced++
+                    Log.d(
+                        LOG_TAG,
+                        "Adaptive foreground entry: id=0x${foregroundId.toString(16)}, config=$qualifier, path=$iconPath, size=${pixelSize}px"
+                    )
+                }
+            }
+            Log.d(LOG_TAG, "Replaced $adaptiveEntriesReplaced adaptive foreground resource entry/entries.")
+        }
+
         iconFiles.forEach { (path, bytes) -> apkModule.add(ByteInputSource(bytes, path)) }
+        adaptiveFiles.forEach { (path, bytes) -> apkModule.add(ByteInputSource(bytes, path)) }
         Log.d(LOG_TAG, "Replaced $replacedEntries bitmap launcher icon entry/entries with density-specific assets.")
     }
 
