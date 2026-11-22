@@ -153,6 +153,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         // some app layouts, causing the title bar to cover the app content.
         // Padding moves the content area's layout bounds below the bar without
         // changing or reparenting the app's view hierarchy.
+        // Allow the title bar to draw into the reserved top-padding area.
+        // Without this, FrameLayout clips the negatively translated bar.
+        content.setClipToPadding(false);
         content.setPadding(content.getPaddingLeft(),
                 content.getPaddingTop() + barHeight,
                 content.getPaddingRight(), content.getPaddingBottom());
