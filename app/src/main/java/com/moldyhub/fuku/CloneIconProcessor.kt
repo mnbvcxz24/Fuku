@@ -11,7 +11,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 object CloneIconProcessor {
-    private const val ICON_SIZE = 887
+    private const val ICON_SIZE = 1024
 
     fun importIcon(context: Context, uri: Uri): File {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -37,9 +37,9 @@ object CloneIconProcessor {
         val scaled = Bitmap.createScaledBitmap(square, ICON_SIZE, ICON_SIZE, true)
         if (scaled !== square) square.recycle()
 
-        val output = File(context.cacheDir, "fuku_clone_custom_icon.png")
+        val output = File(context.cacheDir, "fuku_clone_custom_icon.webp")
         FileOutputStream(output).use {
-            check(scaled.compress(Bitmap.CompressFormat.PNG, 100, it)) {
+            check(compressWebp(scaled, it)) {
                 "Could not save the selected icon image."
             }
             it.fd.sync()
@@ -64,17 +64,26 @@ object CloneIconProcessor {
         return adjusted
     }
 
-    fun createPngBytes(context: Context, customIconFile: File?, hueDegrees: Float): ByteArray {
+    fun createWebpBytes(context: Context, customIconFile: File?, hueDegrees: Float): ByteArray {
         val bitmap = previewBitmap(context, customIconFile?.absolutePath, hueDegrees)
         return try {
             ByteArrayOutputStream().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                check(compressWebp(bitmap, output)) {
                     "Could not encode the clone icon."
                 }
                 output.toByteArray()
             }
         } finally {
             bitmap.recycle()
+        }
+    }
+
+    private fun compressWebp(bitmap: Bitmap, output: java.io.OutputStream): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, output)
+        } else {
+            @Suppress("DEPRECATION")
+            bitmap.compress(Bitmap.CompressFormat.WEBP, 100, output)
         }
     }
 
