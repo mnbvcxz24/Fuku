@@ -146,7 +146,7 @@ class CloneApkBuilder(private val context: Context) {
 
         val mutator = ManifestAndArscMutator()
         val cloneIconBytes = buildStep("Prepare clone launcher icon") {
-            CloneIconProcessor.createPngBytes(context, customIconFile, hueDegrees)
+            CloneIconProcessor.createWebpBytes(context, customIconFile, hueDegrees)
         }
         // Restoring an activity theme before its onCreate requires
         // ActivityLifecycleCallbacks.onActivityPreCreated (API 29+).
