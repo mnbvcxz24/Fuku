@@ -285,7 +285,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         windowParams.dimAmount = 0f;
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
-        window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         window.setAttributes(windowParams);
 
         final int barHeight = Math.round(38 * density);
@@ -312,24 +312,10 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         title.setGravity(Gravity.CENTER);
         title.setSingleLine(true);
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        title.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override public boolean onLongClick(View view) {
-                DisplayMetrics current = activity.getResources().getDisplayMetrics();
-                int[] defaults = defaultBounds(current);
-                WindowManager.LayoutParams p = activity.getWindow().getAttributes();
-                p.x = defaults[0];
-                p.y = defaults[1];
-                p.width = defaults[2];
-                p.height = defaults[3];
-                activity.getWindow().setAttributes(p);
-                saveBounds(activity);
-                android.util.Log.d("FukuFloating", "Title-bar long press reset window to centered bounds");
-                return true;
-            }
-        });
         title.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
             int startX, startY;
+            long downTime;
             boolean dragging;
             @Override public boolean onTouch(View view, MotionEvent event) {
                 WindowManager.LayoutParams p = activity.getWindow().getAttributes();
@@ -340,8 +326,9 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                         downY = event.getRawY();
                         startX = p.x;
                         startY = p.y;
+                        downTime = event.getEventTime();
                         dragging = false;
-                        return false;
+                        return true;
                     case MotionEvent.ACTION_MOVE:
                         float dx = event.getRawX() - downX;
                         float dy = event.getRawY() - downY;
@@ -356,13 +343,28 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                                     Math.max(0, current.heightPixels - Math.round(38 * density)));
                             activity.getWindow().setAttributes(p);
                         }
-                        return false;
+                        return true;
                     case MotionEvent.ACTION_UP:
+                        if (!dragging && event.getEventTime() - downTime
+                                >= android.view.ViewConfiguration.getLongPressTimeout()) {
+                            int[] defaults = defaultBounds(current);
+                            p.x = defaults[0];
+                            p.y = defaults[1];
+                            p.width = defaults[2];
+                            p.height = defaults[3];
+                            activity.getWindow().setAttributes(p);
+                            saveBounds(activity);
+                            android.util.Log.d("FukuFloating", "Title-bar long press reset window to centered bounds");
+                        } else if (!dragging) {
+                            view.performClick();
+                        }
+                        dragging = false;
+                        return true;
                     case MotionEvent.ACTION_CANCEL:
                         dragging = false;
-                        return false;
+                        return true;
                     default:
-                        return false;
+                        return true;
                 }
             }
         });
