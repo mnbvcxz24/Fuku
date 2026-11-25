@@ -113,6 +113,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     }
 
     @Override public void onActivityStarted(final Activity activity) {
+        applyFloatingOrientationPolicy(activity);
         markRunDirty(activity);
         synchronized (LOCK) {
             LIVE_ACTIVITIES.add(activity);
@@ -127,12 +128,35 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
 
     @Override public void onActivityStopped(Activity activity) { saveBounds(activity); }
     @Override public void onActivityPaused(Activity activity) { saveBounds(activity); }
+
+    /**
+     * Floating clone activities with no manifest orientation must follow the
+     * user's display orientation. Some devices otherwise resolve a floating
+     * activity to portrait after its first layout/configuration pass. Keep any
+     * explicit orientation declared by the original app unchanged.
+     */
+    private void applyFloatingOrientationPolicy(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        try {
+            android.content.pm.ActivityInfo info = activity.getPackageManager()
+                    .getActivityInfo(activity.getComponentName(), 0);
+            if (info.screenOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+                activity.setRequestedOrientation(
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER);
+            }
+        } catch (Throwable error) {
+            android.util.Log.w("FukuFloating", "Could not apply floating orientation policy", error);
+        }
+    }
     @Override public void onActivityCreated(Activity activity, Bundle state) {
         synchronized (LOCK) {
             LIVE_ACTIVITIES.add(activity);
         }
     }
-    @Override public void onActivityResumed(Activity activity) { FloatingBubble.hide(activity.getTaskId()); }
+    @Override public void onActivityResumed(Activity activity) {
+        applyFloatingOrientationPolicy(activity);
+        FloatingBubble.hide(activity.getTaskId());
+    }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
 
     @Override public void onActivityDestroyed(Activity activity) {
