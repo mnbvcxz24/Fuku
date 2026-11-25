@@ -49,14 +49,16 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     private static final class DecorationState {
         final View bar;
         final FrameLayout contentHost;
+        View appRoot;
         final ViewGroup.LayoutParams decorLayoutParams;
         int lastScreenWidth;
         int lastScreenHeight;
 
-        DecorationState(View bar, FrameLayout contentHost,
+        DecorationState(View bar, FrameLayout contentHost, View appRoot,
                         ViewGroup.LayoutParams decorLayoutParams, DisplayMetrics metrics) {
             this.bar = bar;
             this.contentHost = contentHost;
+            this.appRoot = appRoot;
             this.decorLayoutParams = decorLayoutParams;
             this.lastScreenWidth = metrics.widthPixels;
             this.lastScreenHeight = metrics.heightPixels;
@@ -216,6 +218,29 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
                 DecorationState state = (DecorationState) tag;
 
                 if (wrapper.getParent() != decor) {
+                    // The cloned app may rebuild its decor content after startup.
+                    // Adopt that current root before restoring our decoration, rather
+                    // than putting an obsolete app view back on top of the new one.
+                    View currentRoot = decor.getChildCount() > 0 ? decor.getChildAt(0) : null;
+                    if (currentRoot != null && currentRoot != wrapper
+                            && currentRoot != state.contentHost
+                            && currentRoot != state.bar) {
+                        if (currentRoot.getParent() instanceof ViewGroup
+                                && currentRoot.getParent() != state.contentHost) {
+                            ((ViewGroup) currentRoot.getParent()).removeView(currentRoot);
+                        }
+                        if (currentRoot.getParent() == null
+                                && currentRoot != state.contentHost) {
+                            if (state.appRoot != null && state.appRoot.getParent() == state.contentHost) {
+                                state.contentHost.removeView(state.appRoot);
+                            }
+                            state.contentHost.addView(currentRoot, 0, new FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT));
+                            state.appRoot = currentRoot;
+                        }
+                    }
+
                     if (wrapper.getParent() instanceof ViewGroup) {
                         ((ViewGroup) wrapper.getParent()).removeView(wrapper);
                     }
@@ -519,7 +544,7 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
         wrapper.addView(contentHost, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        DecorationState state = new DecorationState(bar, contentHost, originalDecorParams,
+        DecorationState state = new DecorationState(bar, contentHost, appRoot, originalDecorParams,
                 activity.getResources().getDisplayMetrics());
         wrapper.setTag(state);
         decor.addView(wrapper, 0, originalDecorParams);
@@ -599,22 +624,15 @@ public final class FloatingWindow implements Application.ActivityLifecycleCallba
     }
 
     private static void recordInstallRetry(Activity activity, ViewGroup decor, String reason) {
-        ViewTreeObserver.OnGlobalLayoutListener remove = null;
         synchronized (LOCK) {
             int attempts = INSTALL_RETRIES.containsKey(activity) ? INSTALL_RETRIES.get(activity) + 1 : 1;
             INSTALL_RETRIES.put(activity, attempts);
-            android.util.Log.w("FukuFloating", "Title-bar setup retry " + attempts + "/"
-                    + MAX_INSTALL_RETRIES + ": " + reason);
-            if (attempts >= MAX_INSTALL_RETRIES) {
-                remove = LAYOUT_LISTENERS.remove(activity);
-                INSTALL_RETRIES.remove(activity);
-                android.util.Log.w("FukuFloating", "Stopped title-bar retries after "
-                        + MAX_INSTALL_RETRIES + " attempts");
+            // Keep the layout watcher alive: some cloned apps attach or replace their
+            // content well after the first layout. Throttle logs, not recovery.
+            if (attempts == 1 || attempts % MAX_INSTALL_RETRIES == 0) {
+                android.util.Log.w("FukuFloating", "Title-bar setup still waiting after "
+                        + attempts + " layout checks: " + reason);
             }
-        }
-        if (remove != null) {
-            ViewTreeObserver observer = decor.getViewTreeObserver();
-            if (observer.isAlive()) observer.removeOnGlobalLayoutListener(remove);
         }
     }
 
